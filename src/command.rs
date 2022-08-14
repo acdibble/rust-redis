@@ -53,6 +53,7 @@ pub enum Command {
         expiration_mode: SetExpirationMode,
         return_mode: bool,
     },
+    Exists(Vec<Value>),
     Error(Value),
 }
 
@@ -147,6 +148,7 @@ impl TryFrom<Value> for Command {
                 _ => None,
             },
             "SET" | "set" => Command::parse_set_command(values),
+            "EXISTS" | "exists" => Some(Self::Exists(values.collect())),
             string => Some(Self::Error(Value::Error(format!(
                 "unknown command '{}'",
                 string

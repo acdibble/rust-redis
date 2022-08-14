@@ -182,6 +182,17 @@ impl Socket {
         write!(&mut self.output_buffer, "{}", old_value)
     }
 
+    fn exists(&mut self, values: Vec<Value>) -> Result<()> {
+        let store = self.cache.lock().expect("shouldn't fail to get a lock");
+        let mut count = 0i64;
+
+        for v in values {
+            count += if store.has_entry(v.as_str()?) { 1 } else { 0 }
+        }
+
+        write!(&mut self.output_buffer, "{}", Value::Integer(count))
+    }
+
     pub async fn run(&mut self) -> Result<()> {
         loop {
             self.output_buffer.clear();
@@ -208,6 +219,7 @@ impl Socket {
                     self.set(key, value, insertion_mode, expiration_mode, return_mode)
                         .await?
                 }
+                Command::Exists(values) => self.exists(values)?,
             }
 
             self.write.write_all(&self.output_buffer).await?

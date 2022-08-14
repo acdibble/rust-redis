@@ -7,6 +7,7 @@ pub enum Value {
     StaticSimpleString(&'static str),
     BulkString(String),
     Array(Vec<Value>),
+    Integer(i64),
     StaticError(&'static str),
     Error(String),
 }
@@ -78,6 +79,7 @@ impl std::fmt::Display for Value {
 
                 Ok(())
             }
+            Self::Integer(value) => write!(f, ":{}\r\n", value),
             Self::Error(message) => write!(f, "-{}\r\n", message),
             Self::StaticError(message) => write!(f, "-{}\r\n", message),
         }

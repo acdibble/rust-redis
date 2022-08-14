@@ -1,5 +1,11 @@
+mod store;
+
+use crate::store::Store;
 use async_recursion::async_recursion;
-use std::io::Write;
+use std::{
+    io::Write,
+    sync::{Arc, Mutex},
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Error, ErrorKind, Result},
     net::{
@@ -8,10 +14,13 @@ use tokio::{
     },
 };
 
+type Cache = Arc<Mutex<Store<Value>>>;
+
 #[derive(Debug)]
 enum Command {
     Ping(Option<Value>),
     Echo(Value),
+    Get(Value),
     DynamicError(Value),
     StaticError(Value),
 }
@@ -21,33 +30,43 @@ impl TryFrom<Value> for Command {
 
     fn try_from(value: Value) -> std::result::Result<Self, Self::Error> {
         let mut values = value.into_array()?;
-        let command = values[0].bulk_string()?.as_str();
+        let command = values[0].as_str()?;
 
-        match command {
+        let cmd = match command {
             "PING" | "ping" => {
                 if values.len() == 1 {
-                    Ok(Self::Ping(None))
+                    Some(Self::Ping(None))
                 } else if values.len() == 2 {
-                    Ok(Self::Ping(values.pop()))
+                    Some(Self::Ping(values.pop()))
                 } else {
-                    Ok(Self::StaticError(Value::StaticError(
-                        "ERR wrong number of arguments for command",
-                    )))
+                    None
                 }
             }
             "ECHO" | "echo" => {
                 if values.len() == 2 {
-                    Ok(Self::Echo(values.pop().unwrap()))
+                    Some(Self::Echo(values.pop().unwrap()))
                 } else {
-                    Ok(Self::StaticError(Value::StaticError(
-                        "ERR wrong number of arguments for command",
-                    )))
+                    None
                 }
             }
-            string => Ok(Self::DynamicError(Value::Error(format!(
+            "GET" | "get" => {
+                if values.len() == 2 {
+                    Some(Self::Get(values.pop().unwrap()))
+                } else {
+                    None
+                }
+            }
+            string => Some(Self::DynamicError(Value::Error(format!(
                 "unknown command '{}'",
                 string
             )))),
+        };
+
+        match cmd {
+            Some(result) => Ok(result),
+            None => Ok(Self::StaticError(Value::StaticError(
+                "ERR wrong number of arguments for command",
+            ))),
         }
     }
 }
@@ -74,9 +93,10 @@ impl Value {
         }
     }
 
-    fn bulk_string(&self) -> Result<&String> {
+    fn as_str(&self) -> Result<&str> {
         match self {
-            Value::BulkString(value) => Ok(value),
+            Self::BulkString(value) | Self::SimpleString(value) => Ok(value.as_str()),
+            Self::StaticSimpleString(value) => Ok(value),
             _ => Err(Error::new(
                 ErrorKind::InvalidInput,
                 format!("expected array, got {:?}", self),
@@ -112,10 +132,11 @@ struct Socket {
     write: OwnedWriteHalf,
     buffer: String,
     output_buffer: Vec<u8>,
+    cache: Cache,
 }
 
 impl Socket {
-    fn from(stream: TcpStream) -> Self {
+    fn from(stream: TcpStream, cache: Cache) -> Self {
         let (read, write) = stream.into_split();
 
         Self {
@@ -123,6 +144,7 @@ impl Socket {
             reader: BufReader::new(read),
             buffer: String::with_capacity(1024),
             output_buffer: Vec::with_capacity(1024),
+            cache,
         }
     }
 
@@ -232,19 +254,35 @@ impl Socket {
         Command::try_from(array)
     }
 
+    async fn fetch(&mut self, key: Value) -> Result<()> {
+        let store = self.cache.lock().expect("shouldn't fail to get a lock");
+
+        let key = key.as_str()?;
+
+        let value = match store.get(key) {
+            Some(value) => value,
+            _ => &Value::Nil,
+        };
+
+        write!(&mut self.output_buffer, "{}", value)
+    }
+
     async fn run(&mut self) -> Result<()> {
         loop {
             let cmd = self.parse_command().await?;
 
-            let result = match cmd {
+            match cmd {
                 Command::Echo(value)
                 | Command::Ping(Some(value))
                 | Command::StaticError(value)
-                | Command::DynamicError(value) => value,
-                Command::Ping(None) => Value::StaticSimpleString("PONG"),
-            };
-
-            write!(&mut self.output_buffer, "{}", result)?;
+                | Command::DynamicError(value) => write!(&mut self.output_buffer, "{}", value)?,
+                Command::Ping(None) => write!(
+                    &mut self.output_buffer,
+                    "{}",
+                    Value::StaticSimpleString("PONG")
+                )?,
+                Command::Get(key) => self.fetch(key).await?,
+            }
 
             self.write.write_all(&self.output_buffer).await?
         }
@@ -255,13 +293,17 @@ impl Socket {
 async fn main() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
 
+    let cache = Arc::new(Mutex::new(Store::<Value>::new()));
+
     loop {
         let (socket, addr) = listener.accept().await?;
 
         println!("accepted connection from {}", addr);
 
+        let clone = cache.clone();
+
         tokio::spawn(async move {
-            match Socket::from(socket).run().await {
+            match Socket::from(socket, clone).run().await {
                 Ok(()) => {}
                 Err(error) => eprintln!("encountered error: {}", error),
             }

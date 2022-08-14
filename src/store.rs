@@ -4,6 +4,19 @@ pub struct Entry<T: Display> {
     value: T,
 }
 
+impl<T> Entry<T>
+where
+    T: Display,
+{
+    fn from(value: T) -> Self {
+        Self { value }
+    }
+
+    fn get(&self) -> Option<&T> {
+        Some(&self.value)
+    }
+}
+
 impl<T> std::fmt::Display for Entry<T>
 where
     T: Display,
@@ -25,6 +38,15 @@ impl<T: Display> Store<T> {
     }
 
     pub fn get(&self, key: &str) -> Option<&T> {
-        self.map.get(key).map(|val| &val.value)
+        match self.map.get(key) {
+            Some(value) => value.get(),
+            None => None,
+        }
+    }
+
+    pub fn insert(&mut self, key: String, value: T) -> Option<T> {
+        self.map
+            .insert(key, Entry::from(value))
+            .map(|val| val.value)
     }
 }

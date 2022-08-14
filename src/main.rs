@@ -21,6 +21,7 @@ enum Command {
     Ping(Option<Value>),
     Echo(Value),
     Get(Value),
+    Set(Value, Value),
     DynamicError(Value),
     StaticError(Value),
 }
@@ -52,6 +53,14 @@ impl TryFrom<Value> for Command {
             "GET" | "get" => {
                 if values.len() == 2 {
                     Some(Self::Get(values.pop().unwrap()))
+                } else {
+                    None
+                }
+            }
+            "SET" | "set" => {
+                if values.len() == 3 {
+                    let value = values.pop().unwrap();
+                    Some(Self::Set(values.pop().unwrap(), value))
                 } else {
                     None
                 }
@@ -100,6 +109,21 @@ impl Value {
             _ => Err(Error::new(
                 ErrorKind::InvalidInput,
                 format!("expected array, got {:?}", self),
+            )),
+        }
+    }
+}
+
+impl TryInto<String> for Value {
+    type Error = Error;
+
+    fn try_into(self) -> std::result::Result<String, <Self as TryInto<String>>::Error> {
+        match self {
+            Self::BulkString(value) | Self::SimpleString(value) => Ok(value),
+            Self::StaticSimpleString(value) => Ok(value.to_owned()),
+            _ => Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!("expected string, got {:?}", self),
             )),
         }
     }
@@ -161,6 +185,9 @@ impl Socket {
                 "failed to read line from buffer",
             )),
         }
+        .map(|_| {
+            println!("line: {:?}", self.buffer);
+        })
     }
 
     fn parse_len(&self) -> Result<i32> {
@@ -267,9 +294,25 @@ impl Socket {
         write!(&mut self.output_buffer, "{}", value)
     }
 
+    async fn set(&mut self, key: Value, value: Value) -> Result<()> {
+        let key = key.try_into()?;
+
+        let mut store = self.cache.lock().expect("shouldn't fail to get a lock");
+
+        store.insert(key, value);
+
+        write!(
+            &mut self.output_buffer,
+            "{}",
+            Value::StaticSimpleString("OK")
+        )
+    }
+
     async fn run(&mut self) -> Result<()> {
         loop {
             let cmd = self.parse_command().await?;
+
+            println!("command: {cmd:?}");
 
             match cmd {
                 Command::Echo(value)
@@ -282,6 +325,7 @@ impl Socket {
                     Value::StaticSimpleString("PONG")
                 )?,
                 Command::Get(key) => self.fetch(key).await?,
+                Command::Set(key, value) => self.set(key, value).await?,
             }
 
             self.write.write_all(&self.output_buffer).await?

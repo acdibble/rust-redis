@@ -14,7 +14,7 @@ use tokio::{
     },
 };
 
-type Cache = Arc<Mutex<Store<Value>>>;
+type Cache = Arc<Mutex<Store>>;
 
 pub struct Socket {
     reader: BufReader<OwnedReadHalf>,
@@ -50,9 +50,9 @@ impl Socket {
                 "failed to read line from buffer",
             )),
         }
-        .map(|_| {
-            println!("line: {:?}", self.buffer);
-        })
+        // .map(|_| {
+        //     println!("line: {:?}", self.buffer);
+        // })
     }
 
     fn parse_len(&self) -> Result<i32> {
@@ -172,9 +172,11 @@ impl Socket {
         let mut store = self.cache.lock().expect("shouldn't fail to get a lock");
 
         let old_value = match store.insert(key, value, insertion_mode, expiration_mode) {
-            None if return_mode => Value::Nil,
-            Some(value) if return_mode => value,
-            _ => Value::StaticSimpleString("OK"),
+            Ok(None) if return_mode => Value::Nil,
+            Ok(Some(value)) if return_mode => value,
+            Ok(Some(_)) => Value::StaticSimpleString("OK"),
+            Ok(None) => Value::StaticSimpleString("OK"),
+            _ => Value::Nil,
         };
 
         write!(&mut self.output_buffer, "{}", old_value)
@@ -182,9 +184,9 @@ impl Socket {
 
     pub async fn run(&mut self) -> Result<()> {
         loop {
-            let cmd = self.parse_command().await?;
+            self.output_buffer.clear();
 
-            println!("command: {cmd:?}");
+            let cmd = self.parse_command().await?;
 
             match cmd {
                 Command::Echo(value) | Command::Ping(Some(value)) | Command::Error(value) => {

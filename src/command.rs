@@ -4,28 +4,38 @@ use std::vec::IntoIter;
 #[derive(Debug)]
 pub enum SetInsertionMode {
     Normal,
-    NX,
-    XX,
+    IfNotExists,
+    IfExists,
+}
+
+impl SetInsertionMode {
+    fn is_normal(&self) -> bool {
+        matches!(self, SetInsertionMode::Normal)
+    }
 }
 
 #[derive(Debug)]
 pub enum SetExpirationMode {
     Normal,
-    // Ex(u128),
-    Px(u128),
-    // Exat,
-    // Pxat,
+    ExpirySeconds(u128),
+    ExpiryMilliseconds(u128),
+    ExpiryUTCSeconds(u128),
+    ExpiryUTCMilliseconds(u128),
     KeepTTL,
 }
 
 impl SetExpirationMode {
+    fn is_normal(&self) -> bool {
+        matches!(self, SetExpirationMode::Normal)
+    }
+
     fn from(string: &str, amount: u128) -> Self {
         match string {
-            // "EX" => Self::Ex(amount),
-            "PX" => Self::Px(amount),
-            // "EXAT" => Self::Exat,
-            // "PXAT" => Self::Pxat,
-            // "KEEPTTL" => Self::KeepTTL,
+            "EX" | "ex" => Self::ExpirySeconds(amount),
+            "PX" | "px" => Self::ExpiryMilliseconds(amount),
+            "EXAT" | "exat" => Self::ExpiryUTCSeconds(amount),
+            "PXAT" | "pxat" => Self::ExpiryUTCMilliseconds(amount),
+            "KEEPTTL" | "keepttl" => Self::KeepTTL,
             _ => Self::Normal,
         }
     }
@@ -51,8 +61,8 @@ impl Command {
         Self::Error(Value::StaticError(message))
     }
 
-    fn parse_integer(value: String) -> std::result::Result<u128, Self> {
-        match value.parse::<u128>() {
+    fn parse_integer(value: String) -> std::result::Result<i64, Self> {
+        match value.parse::<i64>() {
             Ok(num) => Ok(num),
             Err(_) => Err(Command::build_error(
                 "value is not an integer or out of range",
@@ -60,7 +70,7 @@ impl Command {
         }
     }
 
-    fn parse_set(mut values: IntoIter<Value>) -> Option<Self> {
+    fn parse_set_command(mut values: IntoIter<Value>) -> Option<Self> {
         if values.len() < 2 {
             return None;
         }
@@ -72,25 +82,33 @@ impl Command {
         let mut return_mode = false;
 
         while let Some(Value::BulkString(value)) = values.next() {
+            println!("arg: {value:?}, {}", values.len());
             match value.as_str() {
-                "XX" if matches!(insertion_mode, SetInsertionMode::Normal) => {
-                    insertion_mode = SetInsertionMode::XX
+                "XX" | "xx" if insertion_mode.is_normal() => {
+                    insertion_mode = SetInsertionMode::IfExists
                 }
-                "NX" if matches!(insertion_mode, SetInsertionMode::Normal) => {
-                    insertion_mode = SetInsertionMode::NX
+                "NX" | "nx" if insertion_mode.is_normal() => {
+                    insertion_mode = SetInsertionMode::IfNotExists
                 }
-                kind @ ("EX" | "PX" | "EXAT" | "PXAT")
-                    if matches!(expiration_mode, SetExpirationMode::Normal) =>
+                kind @ ("EX" | "PX" | "EXAT" | "PXAT" | "ex" | "px" | "exat" | "pxat")
+                    if expiration_mode.is_normal() =>
                 {
                     match values.next() {
                         Some(Value::BulkString(value)) => match Command::parse_integer(value) {
-                            Ok(num) => expiration_mode = SetExpirationMode::from(kind, num),
+                            Ok(num) if num > 0 => {
+                                expiration_mode = SetExpirationMode::from(kind, num as u128)
+                            }
+                            Ok(_) => {
+                                return Some(Command::build_error(
+                                    "invalid expire time in 'set' command",
+                                ))
+                            }
                             Err(cmd) => return Some(cmd),
                         },
                         _ => return Some(Command::build_error("syntax error")),
                     }
                 }
-                "KEEPTTL" if matches!(expiration_mode, SetExpirationMode::Normal) => {
+                "KEEPTTL" if expiration_mode.is_normal() => {
                     expiration_mode = SetExpirationMode::KeepTTL
                 }
                 "GET" => return_mode = true,
@@ -128,7 +146,7 @@ impl TryFrom<Value> for Command {
                 (Some(key), 0) => Some(Self::Get(key)),
                 _ => None,
             },
-            "SET" | "set" => Command::parse_set(values),
+            "SET" | "set" => Command::parse_set_command(values),
             string => Some(Self::Error(Value::Error(format!(
                 "unknown command '{}'",
                 string
@@ -137,9 +155,10 @@ impl TryFrom<Value> for Command {
 
         match cmd {
             Some(result) => Ok(result),
-            None => Ok(Self::Error(Value::StaticError(
-                "ERR wrong number of arguments for command",
-            ))),
+            None => Ok(Self::Error(Value::Error(format!(
+                "wrong number of arguments for '{}' command",
+                command.as_str()?
+            )))),
         }
     }
 }

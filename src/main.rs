@@ -5,7 +5,6 @@ mod value;
 
 use crate::socket::Socket;
 use crate::store::Store;
-use crate::value::Value;
 use std::sync::{Arc, Mutex};
 use tokio::{io::Result, net::TcpListener};
 
@@ -13,7 +12,7 @@ use tokio::{io::Result, net::TcpListener};
 async fn main() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
 
-    let cache = Arc::new(Mutex::new(Store::<Value>::new()));
+    let cache = Arc::new(Mutex::new(Store::new()));
 
     loop {
         let (socket, addr) = listener.accept().await?;

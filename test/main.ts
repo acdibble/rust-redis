@@ -1,6 +1,6 @@
 import { assertEquals } from "https://deno.land/std@0.149.0/testing/asserts.ts";
 import { connect, Redis } from "https://deno.land/x/redis@v0.26.0/mod.ts";
-import { delay } from "https://deno.land/std/async/mod.ts";
+import { delay } from "https://deno.land/std@0.152.0/async/mod.ts";
 
 const startServer = async () => {
   const worker = new Worker(new URL("./server.ts", import.meta.url).href, {
@@ -60,5 +60,15 @@ Deno.test({
     assertEquals(await redis.get("foo"), "bar");
     await delay(1000);
     assertEquals(await redis.get("foo"), undefined);
+  }),
+});
+
+Deno.test({
+  name: "handles the NX flag properly",
+  fn: redisTest(async (redis) => {
+    assertEquals(await redis.set("foo", "bar", { mode: "NX", ex: 1 }), "OK");
+    assertEquals(await redis.set("foo", "bar2", { mode: "NX" }), "");
+    await delay(1000);
+    assertEquals(await redis.set("foo", "bar2", { mode: "NX" }), "OK");
   }),
 });

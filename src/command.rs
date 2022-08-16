@@ -1,45 +1,6 @@
+use crate::store::{ExpirationMode, InsertionMode};
 use crate::value::Value;
 use std::vec::IntoIter;
-
-#[derive(Debug)]
-pub enum SetInsertionMode {
-    Normal,
-    IfNotExists,
-    IfExists,
-}
-
-impl SetInsertionMode {
-    fn is_normal(&self) -> bool {
-        matches!(self, SetInsertionMode::Normal)
-    }
-}
-
-#[derive(Debug)]
-pub enum SetExpirationMode {
-    Normal,
-    ExpirySeconds(u128),
-    ExpiryMilliseconds(u128),
-    ExpiryUTCSeconds(u128),
-    ExpiryUTCMilliseconds(u128),
-    KeepTTL,
-}
-
-impl SetExpirationMode {
-    fn is_normal(&self) -> bool {
-        matches!(self, SetExpirationMode::Normal)
-    }
-
-    fn from(string: &str, amount: u128) -> Self {
-        match string {
-            "EX" | "ex" => Self::ExpirySeconds(amount),
-            "PX" | "px" => Self::ExpiryMilliseconds(amount),
-            "EXAT" | "exat" => Self::ExpiryUTCSeconds(amount),
-            "PXAT" | "pxat" => Self::ExpiryUTCMilliseconds(amount),
-            "KEEPTTL" | "keepttl" => Self::KeepTTL,
-            _ => Self::Normal,
-        }
-    }
-}
 
 #[derive(Debug)]
 pub enum Command {
@@ -49,8 +10,8 @@ pub enum Command {
     Set {
         key: Value,
         value: Value,
-        insertion_mode: SetInsertionMode,
-        expiration_mode: SetExpirationMode,
+        insertion_mode: InsertionMode,
+        expiration_mode: ExpirationMode,
         return_mode: bool,
     },
     Exists(Vec<Value>),
@@ -78,18 +39,18 @@ impl Command {
 
         let key = values.next().unwrap();
         let value = values.next().unwrap();
-        let mut insertion_mode = SetInsertionMode::Normal;
-        let mut expiration_mode = SetExpirationMode::Normal;
+        let mut insertion_mode = InsertionMode::Normal;
+        let mut expiration_mode = ExpirationMode::Normal;
         let mut return_mode = false;
 
         while let Some(Value::BulkString(value)) = values.next() {
             println!("arg: {value:?}, {}", values.len());
             match value.as_str() {
                 "XX" | "xx" if insertion_mode.is_normal() => {
-                    insertion_mode = SetInsertionMode::IfExists
+                    insertion_mode = InsertionMode::IfExists
                 }
                 "NX" | "nx" if insertion_mode.is_normal() => {
-                    insertion_mode = SetInsertionMode::IfNotExists
+                    insertion_mode = InsertionMode::IfNotExists
                 }
                 kind @ ("EX" | "PX" | "EXAT" | "PXAT" | "ex" | "px" | "exat" | "pxat")
                     if expiration_mode.is_normal() =>
@@ -97,7 +58,7 @@ impl Command {
                     match values.next() {
                         Some(Value::BulkString(value)) => match Command::parse_integer(value) {
                             Ok(num) if num > 0 => {
-                                expiration_mode = SetExpirationMode::from(kind, num as u128)
+                                expiration_mode = ExpirationMode::from(kind, num as u128)
                             }
                             Ok(_) => {
                                 return Some(Command::build_error(
@@ -110,7 +71,7 @@ impl Command {
                     }
                 }
                 "KEEPTTL" if expiration_mode.is_normal() => {
-                    expiration_mode = SetExpirationMode::KeepTTL
+                    expiration_mode = ExpirationMode::KeepTTL
                 }
                 "GET" => return_mode = true,
                 _ => return Some(Command::build_error("syntax error")),

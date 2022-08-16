@@ -1,5 +1,5 @@
-use crate::command::{Command, SetExpirationMode, SetInsertionMode};
-use crate::store::Store;
+use crate::command::Command;
+use crate::store::{ExpirationMode, InsertionMode, Store};
 use crate::value::Value;
 use async_recursion::async_recursion;
 use std::{
@@ -163,8 +163,8 @@ impl Socket {
         &mut self,
         key: Value,
         value: Value,
-        insertion_mode: SetInsertionMode,
-        expiration_mode: SetExpirationMode,
+        insertion_mode: InsertionMode,
+        expiration_mode: ExpirationMode,
         return_mode: bool,
     ) -> Result<()> {
         let key = key.try_into()?;

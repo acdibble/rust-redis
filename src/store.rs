@@ -3,16 +3,53 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{
-    command::{SetExpirationMode, SetInsertionMode},
-    value::Value,
-};
+use crate::value::Value;
 
 fn now() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time went backwards")
         .as_millis()
+}
+
+#[derive(Debug)]
+pub enum InsertionMode {
+    Normal,
+    IfNotExists,
+    IfExists,
+}
+
+impl InsertionMode {
+    pub fn is_normal(&self) -> bool {
+        matches!(self, InsertionMode::Normal)
+    }
+}
+
+#[derive(Debug)]
+pub enum ExpirationMode {
+    Normal,
+    ExpirySeconds(u128),
+    ExpiryMilliseconds(u128),
+    ExpiryUTCSeconds(u128),
+    ExpiryUTCMilliseconds(u128),
+    KeepTTL,
+}
+
+impl ExpirationMode {
+    pub fn is_normal(&self) -> bool {
+        matches!(self, ExpirationMode::Normal)
+    }
+
+    pub fn from(string: &str, amount: u128) -> Self {
+        match string {
+            "EX" | "ex" => Self::ExpirySeconds(amount),
+            "PX" | "px" => Self::ExpiryMilliseconds(amount),
+            "EXAT" | "exat" => Self::ExpiryUTCSeconds(amount),
+            "PXAT" | "pxat" => Self::ExpiryUTCMilliseconds(amount),
+            "KEEPTTL" | "keepttl" => Self::KeepTTL,
+            _ => Self::Normal,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -29,17 +66,26 @@ impl Entry {
         }
     }
 
-    fn get(&self) -> Option<&Value> {
+    fn is_valid(&self) -> bool {
         match self.expires_at {
-            Some(time) if time < now() => None,
-            _ => Some(&self.value),
+            Some(time) => time > now(),
+            _ => true,
+        }
+    }
+
+    fn get(&self) -> Option<&Value> {
+        if self.is_valid() {
+            Some(&self.value)
+        } else {
+            None
         }
     }
 
     fn consume(self) -> Option<Value> {
-        match self.expires_at {
-            Some(time) if time < now() => None,
-            _ => Some(self.value),
+        if self.is_valid() {
+            Some(self.value)
+        } else {
+            None
         }
     }
 }
@@ -76,25 +122,23 @@ impl Store {
         &mut self,
         key: String,
         value: Value,
-        insertion_mode: SetInsertionMode,
-        expiration_mode: SetExpirationMode,
+        insertion_mode: InsertionMode,
+        expiration_mode: ExpirationMode,
     ) -> Result<Option<Value>, ()> {
         let mut new_entry = Entry::from(value);
         let current = self.map.get(&key);
 
         match expiration_mode {
-            SetExpirationMode::Normal => {}
-            SetExpirationMode::ExpiryMilliseconds(expiry) => {
+            ExpirationMode::Normal => {}
+            ExpirationMode::ExpiryMilliseconds(expiry) => {
                 new_entry.expires_at = Some(expiry + now())
             }
-            SetExpirationMode::ExpirySeconds(expiry) => {
+            ExpirationMode::ExpirySeconds(expiry) => {
                 new_entry.expires_at = Some(expiry * 1000 + now())
             }
-            SetExpirationMode::ExpiryUTCMilliseconds(expiry) => new_entry.expires_at = Some(expiry),
-            SetExpirationMode::ExpiryUTCSeconds(expiry) => {
-                new_entry.expires_at = Some(expiry * 1000)
-            }
-            SetExpirationMode::KeepTTL => {
+            ExpirationMode::ExpiryUTCMilliseconds(expiry) => new_entry.expires_at = Some(expiry),
+            ExpirationMode::ExpiryUTCSeconds(expiry) => new_entry.expires_at = Some(expiry * 1000),
+            ExpirationMode::KeepTTL => {
                 new_entry.expires_at = match current {
                     Some(Entry {
                         expires_at: Some(previous_expiry),
@@ -105,12 +149,15 @@ impl Store {
             }
         }
 
-        let entry_exists = self.has_entry(&key);
+        let entry_exists = match current {
+            Some(entry) => entry.is_valid(),
+            _ => false,
+        };
 
         let previous = match insertion_mode {
-            SetInsertionMode::Normal => Ok(self.map.insert(key, new_entry)),
-            SetInsertionMode::IfNotExists if !entry_exists => Ok(self.map.insert(key, new_entry)),
-            SetInsertionMode::IfExists if entry_exists => Ok(self.map.insert(key, new_entry)),
+            InsertionMode::Normal => Ok(self.map.insert(key, new_entry)),
+            InsertionMode::IfNotExists if !entry_exists => Ok(self.map.insert(key, new_entry)),
+            InsertionMode::IfExists if entry_exists => Ok(self.map.insert(key, new_entry)),
             _ => Err(()),
         };
 
